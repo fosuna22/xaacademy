@@ -1,0 +1,31 @@
+{
+  "name": "ticketazo-challenge-final-qa-automation",
+  "version": "1.0.0",
+  "description": "Este repositorio contiene el desarrollo del challenge final del curso de XAcademy , centrado en la creación de un plan de pruebas funcional y la automatización de casos críticos con Cypress sobre el sistema \"Ticketazo\".  # 🧪 Ticketazo – Challenge Final QA Automation",
+  "main": "index.js",
+  "scripts": {
+    "cypress:open": "cypress open",
+    "cypress:run": "cypress run",
+    "cypress:run:chrome": "cypress run --browser chrome",
+    "cypress:run:headed": "cypress run --headed",
+    "cypress:run:spec": "cypress run --spec",
+    "test": "cypress run",
+    "test:open": "cypress open",
+    "install:cypress": "npm install cypress --save-dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TauTech99/Ticketazo-Challenge-Final-QA-Automation.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/TauTech99/Ticketazo-Challenge-Final-QA-Automation/issues"
+  },
+  "homepage": "https://github.com/TauTech99/Ticketazo-Challenge-Final-QA-Automation#readme",
+  "devDependencies": {
+    "cypress": "^14.5.2"
+  }
+}
