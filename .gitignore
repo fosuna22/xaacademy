@@ -16,3 +16,5 @@ cypress/screenshots/
 
 # Env files
 .env
+
+package-lock.json
