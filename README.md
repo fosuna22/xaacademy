@@ -30,7 +30,7 @@ Este repositorio forma parte del **Challenge Final del curso de Testing**, cuyo 
   👉 [Ver planilla](https://docs.google.com/spreadsheets/d/183hchgUQxTcNDGcj9PuY__I2lf8ZXOMiHi0htRkB1ys/edit#gid=515552450)
 
 - 🐞 **Tablero Trello – Reporte de bugs**  
-  👉 [Enlace al tablero]([https://trello.com/b/5azlCzVI](https://trello.com/b/5azlCzVI/ticketazo-qa-automation))
+  👉 [Enlace al tablero](https://trello.com/b/5azlCzVI/ticketazo-qa-automation](https://trello.com/b/5azlCzVI/ticketazo-qa-automation))
 
 ---
 
