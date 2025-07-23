@@ -1,2 +1,18 @@
+# Node modules
 node_modules/
-package-lock.json
+
+# Cypress videos and screenshots
+cypress/videos/
+cypress/screenshots/
+
+# VSCode settings
+.vscode/
+
+# Mac system files
+.DS_Store
+
+# Logs
+*.log
+
+# Env files
+.env
