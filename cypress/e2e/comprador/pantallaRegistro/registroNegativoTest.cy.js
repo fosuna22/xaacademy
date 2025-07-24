@@ -27,7 +27,7 @@ describe('Registro de usuario con datos inválidos (TC002)', () => {
     cy.get('[data-cy="input-password"]').type('team8TEST*');
     cy.get('[data-cy="input-repetir-password"]').type('team8TEST*');
     cy.get('[data-cy="btn-registrarse"]').click();
-    cy.contains(/(Correo electrónico inválido|Please include an '@' in the email address)/).should('be.visible');
+    cy.contains(/Please include an '@' in the email address\..*is missing an '@'\./).should('be.visible');
     cy.log('✅ El sistema bloqueó correctamente el registro con datos inválidos');
   });
 
