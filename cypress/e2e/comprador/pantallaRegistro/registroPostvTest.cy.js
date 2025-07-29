@@ -12,7 +12,6 @@ describe('Registro de un nuevo usuario', () => {
     // Seleccionar la provincia
     cy.get('[data-cy="select-provincia"]').click(); // Abre el dropdown
     cy.contains('.cursor-pointer', 'Buenos Aires').click(); // Selecciona la opción
-    cy.get('[data-cy="select-provincia"]').click(); 
     // Seleccionar la localidad
     cy.get('[data-cy="select-localidad"]').click().type('Tres de Febrero');
     cy.contains('.cursor-pointer', 'Tres de Febrero').click();
