@@ -3,3 +3,4 @@ describe('TC003 - Login de usuario comprador', () => {
         cy.loginCompradorPos();
     })
 })
+
