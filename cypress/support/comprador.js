@@ -29,20 +29,28 @@ Cypress.Commands.add('loginCompradorPassNeg', () => {
   cy.get('[data-cy="error-message"]').should('be.visible');
 });
 
-Cypress.Commands.add('comprarEntradas', () => {
-  cy.visit('https://vps-3696213-x.dattaweb.com/');
-  cy.get('[data-cy="btn-ver-evento-8"]').click();
+Cypress.Commands.add('comprarEntradasConButacas', () => {
+  // cy.visit('https://vps-3696213-x.dattaweb.com/');
+  cy.get('[data-cy="btn-ver-evento-4"]').click();
   cy.get('button').contains('Adquirir entrada').click();
-});
 
-Cypress.Commands.add('clickEventoAleatorio', () => {
-  Cypress._.times(3, () => {
-    cy.get('button[type="button"]:contains("evento")').then($eventos => {
-      const randomIndex = Math.floor(Math.random() * $eventos.length);
-      cy.wrap($eventos[randomIndex]).click();
-      cy.get('[role="dialog"]', { timeout: 8000 }).should('be.visible');
-      cy.wait(3000);
-      cy.get('body').click(10, 10);
+  cy.contains('button', 'Con Butacas').click();
+
+  // elección de 4 butacas desocupadas
+  cy.get('button[title^="Fila"]')
+    .not('[disabled]')
+    .then(($butacas) => {
+      expect($butacas.length).to.be.at.least(4);
+
+      for (let i = 0; i < 4; i++) {
+        cy.wrap($butacas[i]).click();
+      }
     });
-  });
+
+  cy.wait(1000)
+  cy.contains('button', 'Comprar').click();
+  cy.contains('button', 'Generar Entrada Gratuita').click();
+  cy.get('[data-cy="titulo-mis-entradas"]')
+    .should('be.visible')
+    .and('contain', 'Mis Entradas');
 });
