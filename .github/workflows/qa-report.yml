@@ -1,0 +1,46 @@
+name: QA Report
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  cypress-and-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run Cypress with Mochawesome
+        run: |
+          npx cypress run --reporter mochawesome --reporter-options "reportFilename=mochawesome,overwrite=true,html=false,json=true,reportDir=cypress/reports" || true
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Parse results and POST to n8n
+        run: |
+          RESULTS_JSON="cypress/reports/mochawesome.json"
+          if [ ! -f "$RESULTS_JSON" ]; then
+            echo "No existe $RESULTS_JSON"; exit 1
+          fi
+
+          PASSED=$(jq '.stats.passes // 0' "$RESULTS_JSON")
+          FAILED=$(jq '.stats.failures // 0' "$RESULTS_JSON")
+          DURATION=$(jq '.stats.duration // 0' "$RESULTS_JSON")
+
+          echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
+
+          curl -sS -f -X POST "https://francoosunaafip.app.n8n.cloud/webhook/db914d8c-6bf4-4e32-99c7-371ed5303b92" \
+            -H "Content-Type: application/json" \
+            -d "{\"passed\":$PASSED,\"failed\":$FAILED,\"durationMs\":$DURATION}"
