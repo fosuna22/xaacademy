@@ -19,11 +19,35 @@ jobs:
           node-version: '20'
 
       - name: Install deps
-        run: npm ci
+        run: |
+          npm ci
+          # Aseguramos reporter y merge tool
+          npm i -D mochawesome mochawesome-merge
 
       - name: Run Cypress with Mochawesome
         run: |
-          npx cypress run --reporter mochawesome --reporter-options "reportFilename=mochawesome,overwrite=true,html=false,json=true,reportDir=cypress/reports" || true
+          npx cypress run \
+            --reporter mochawesome \
+            --reporter-options "reportFilename=mochawesome,overwrite=true,html=false,json=true,reportDir=cypress/reports" || true
+
+      - name: Merge mochawesome JSONs
+        run: |
+          echo "Archivos generados:"
+          ls -la cypress/reports || true
+
+          # Si ya existe un mochawesome.json único, lo usamos; si hay varios, hacemos merge
+          if [ -f "cypress/reports/mochawesome.json" ]; then
+            echo "Encontrado mochawesome.json único."
+          else
+            # Verifica que haya al menos algún json
+            if ls cypress/reports/*.json 1> /dev/null 2>&1; then
+              npx mochawesome-merge cypress/reports/*.json > cypress/reports/mochawesome.json
+              echo "Merge listo -> cypress/reports/mochawesome.json"
+            else
+              echo "No se generaron JSONs de mochawesome (¿no hubo specs? ¿falló Cypress?)"
+              exit 1
+            fi
+          fi
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -41,6 +65,12 @@ jobs:
 
           echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
 
-          curl -sS -f -X POST "https://francoosunaafip.app.n8n.cloud/webhook/db914d8c-6bf4-4e32-99c7-371ed5303b92" \
+          curl -sS -f -X POST "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81" \
             -H "Content-Type: application/json" \
             -d "{\"passed\":$PASSED,\"failed\":$FAILED,\"durationMs\":$DURATION}"
+
+      - name: Upload mochawesome artifact (opcional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mochawesome-report
+          path: cypress/reports/
