@@ -41,6 +41,6 @@ jobs:
 
           echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
 
-          curl -sS -f -X POST "https://francoosunaafip.app.n8n.cloud/webhook/db914d8c-6bf4-4e32-99c7-371ed5303b92" \
+          curl -sS -f -X POST "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81" \
             -H "Content-Type: application/json" \
             -d "{\"passed\":$PASSED,\"failed\":$FAILED,\"durationMs\":$DURATION}"
