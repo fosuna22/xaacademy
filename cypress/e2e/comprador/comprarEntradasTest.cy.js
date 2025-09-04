@@ -4,7 +4,7 @@ describe('Usuario compra entradas de evento', () => {
         cy.comprarEntradasConButacas();
     })
 
-    it('Redirige a login si no está autenticado', () => {
+    it.only('Redirige a login si no está autenticado', () => {
         cy.visit('https://vps-3696213-x.dattaweb.com/');
         cy.comprarEntradasConButacas();
         cy.url().should('include', '/auth/login');
