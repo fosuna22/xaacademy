@@ -102,11 +102,16 @@ jobs:
           [ -f "$RESULTS_JSON" ] || { echo "No existe $RESULTS_JSON"; exit 1; }
           [ -f "$RESULTS_HTML" ] || { echo "No existe $RESULTS_HTML"; exit 1; }
 
-          PASSED=$(jq '.stats.passes // 0' "$RESULTS_JSON")
-          FAILED=$(jq '.stats.failures // 0' "$RESULTS_JSON")
-          DURATION=$(jq '.stats.duration // 0' "$RESULTS_JSON")
+          echo "Stats (según .stats del merge):"
+          jq '.stats | {tests, passes, failures, pending, skipped, duration}' "$RESULTS_JSON" || true
 
-          echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
+          # ✅ Conteo REAL por estado recorriendo todo el árbol
+          PASSED=$(jq '[ .. | objects | select(has("state")) | select(.state=="passed") ] | length' "$RESULTS_JSON")
+          FAILED=$(jq '[ .. | objects | select(has("state")) | select(.state=="failed") ] | length' "$RESULTS_JSON")
+          # Duración: usa .stats.duration si existe, si no suma por test
+          DURATION=$(jq '.stats.duration // ([ .. | objects | select(has("duration")) | .duration ] | add // 0)' "$RESULTS_JSON")
+
+          echo "Conteo real → passed=$PASSED failed=$FAILED durationMs=$DURATION"
           echo "POST → $WEBHOOK_URL"
 
           HTTP_CODE=$(curl -sS -X POST "$WEBHOOK_URL" \
