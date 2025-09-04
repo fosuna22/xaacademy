@@ -1,4 +1,4 @@
-name: QA Report (manual - JSON simple)
+name: QA Report (manual - JSON simple, robusto)
 
 on:
   workflow_dispatch:
@@ -30,28 +30,13 @@ jobs:
       - name: Install deps
         run: |
           npm ci
-          # Reporte JSON estable (sin mochawesome)
-          npm i -D cypress-multi-reporters mocha-json-reporter
 
-      - name: Create reporter config
-        run: |
-          mkdir -p cypress/results
-          cat > reporter-config.json << 'JSON'
-          {
-            "reporterEnabled": "mocha-json-reporter",
-            "mochaJsonReporterReporterOptions": {
-              "output": "cypress/results/results.json",
-              "includePending": true,
-              "usePendingAsNotPassed": true
-            }
-          }
-          JSON
-          cat reporter-config.json
-
-      - name: Run Cypress (json reporter to file)
+      - name: Run Cypress (reporter json → stdout)
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
         run: |
+          mkdir -p cypress/results
+
           EXTRA_ARGS=""
           if [ -n "$TEST_TAG" ]; then
             # Ajustá según tu estrategia (cypress-grep, spec, etc.)
@@ -60,41 +45,41 @@ jobs:
             echo "Ejecutando con filtro: $TEST_TAG (ajusta EXTRA_ARGS si corresponde)"
           fi
 
-          npx cypress run \
-            --reporter cypress-multi-reporters \
-            --reporter-options "configFile=reporter-config.json" \
-            $EXTRA_ARGS || true
+          # Guardamos TODO el stdout (mezcla logs + JSON) en un archivo
+          npx cypress run --reporter json $EXTRA_ARGS | tee cypress/results/stdout.txt || true
+
+      - name: Extraer JSON limpio del stdout
+        run: |
+          node -e "const fs=require('fs');const p='cypress/results/stdout.txt';const s=fs.readFileSync(p,'utf8');let start=-1,depth=0,pos=0,lastStart=-1,lastEnd=-1;for(let i=0;i<s.length;i++){const c=s[i];if(c=='{'){if(depth===0) start=i;depth++;}else if(c=='}'){depth--;if(depth===0&&start!==-1){lastStart=start;lastEnd=i+1;}}}if(lastStart>=0){const json=s.slice(lastStart,lastEnd);fs.writeFileSync('cypress/results/results.json',json);}else{process.exitCode=2;console.error('No se encontró JSON en stdout');}"
+          test -s cypress/results/results.json || (echo 'No se generó cypress/results/results.json' && exit 1)
+          # Mostrar stats si existen
+          jq '.stats // {}' cypress/results/results.json || true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Verificar JSON generado
-        run: |
-          test -s cypress/results/results.json || (echo "No se generó cypress/results/results.json" && exit 1)
-          # Mostrar stats útiles
-          jq '.stats // {}' cypress/results/results.json || true
 
       - name: POST to n8n (JSON simple con detalles de fallos)
         env:
           WEBHOOK_URL: "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81"
         run: |
           set -euo pipefail
-
           RESULTS_JSON="cypress/results/results.json"
 
-          # Totales desde stats (del json reporter), con fallback
-          PASSED=$(jq '.stats.passes // (.passes | length) // 0' "$RESULTS_JSON")
-          FAILED=$(jq '.stats.failures // (.failures | length) // 0' "$RESULTS_JSON")
-          DURATION=$(jq '.stats.duration // 0' "$RESULTS_JSON")
+          # Totales robustos: cuentan por .tests[].state o flags .pass/.fail si aparecieran
+          PASSED=$(jq '[.tests[]? | select((.state=="passed") or (.state=="pass") or (.pass==true))] | length' "$RESULTS_JSON")
+          FAILED=$(jq '[.tests[]? | select((.state=="failed") or (.state=="fail") or (.fail==true))] | length' "$RESULTS_JSON")
 
-          # Detalle de fallos
-          # - mocha-json-reporter produce .failures[] con campos .fullTitle, .title, .file, .err{message}
-          # - suite = fullTitle sin el título del test al final
+          # Duración: usa .stats.duration si existe; si no, suma la de los tests
+          DURATION=$(jq '.stats.duration // ([.tests[]? | .duration] | add // 0)' "$RESULTS_JSON")
+
+          # Detalle de fallos (suite + caso + archivo + error)
+          # En el reporter json, "title" es un array: [suite, ... , test]
           FAILS=$(jq -c '[
-            .failures[]?
+            .tests[]?
+            | select((.state=="failed") or (.state=="fail") or (.fail==true)))
             | {
-                suite: (.fullTitle // "" | sub(" " + (.title // "") + "$"; "")),
-                test:  (.title // ""),
+                suite: ( (.title // []) | (.[0] // "") ),
+                test:  ( (.title // []) | (.[length-1] // "") ),
                 file:  (.file // .fullFile // ""),
                 error: (.err.message // .err // "")
               }
@@ -104,7 +89,7 @@ jobs:
           echo "Fallos:"
           echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
 
-          # Payload robusto
+          # Payload
           PAYLOAD=$(jq -n \
             --argjson passed   "$PASSED" \
             --argjson failed   "$FAILED" \
@@ -124,4 +109,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cypress-json-results
-          path: cypress/results/results.json
+          path: |
+            cypress/results/stdout.txt
+            cypress/results/results.json
