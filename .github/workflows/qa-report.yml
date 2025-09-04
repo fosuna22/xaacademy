@@ -1,4 +1,4 @@
-name: QA Report (manual)
+name: QA Report (manualaa)
 
 on:
   workflow_dispatch:
