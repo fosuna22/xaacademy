@@ -106,8 +106,8 @@ jobs:
           jq '.stats | {tests, passes, failures, pending, skipped, duration}' "$RESULTS_JSON" || true
 
           # ✅ Conteo REAL por estado recorriendo todo el árbol
-          PASSED=$(jq '[ .. | objects | select(has("state")) | select(.state=="passed") ] | length' "$RESULTS_JSON")
-          FAILED=$(jq '[ .. | objects | select(has("state")) | select(.state=="failed") ] | length' "$RESULTS_JSON")
+          PASSED=$(jq '[ .. | objects | select(has("state")) | select(.state=="passed" or .state=="pass") ] | length' "$RESULTS_JSON")
+          FAILED=$(jq '[ .. | objects | select(has("state")) | select(.state=="failed" or .state=="fail") ] | length' "$RESULTS_JSON")
           # Duración: usa .stats.duration si existe, si no suma por test
           DURATION=$(jq '.stats.duration // ([ .. | objects | select(has("duration")) | .duration ] | add // 0)' "$RESULTS_JSON")
 
