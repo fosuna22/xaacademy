@@ -30,23 +30,40 @@ jobs:
       - name: Install deps
         run: |
           npm ci
+          # Reporte JSON estable (sin mochawesome)
+          npm i -D cypress-multi-reporters mocha-json-reporter
 
-      - name: Run Cypress (reporter json → archivo)
+      - name: Create reporter config
+        run: |
+          mkdir -p cypress/results
+          cat > reporter-config.json << 'JSON'
+          {
+            "reporterEnabled": "mocha-json-reporter",
+            "mochaJsonReporterReporterOptions": {
+              "output": "cypress/results/results.json",
+              "includePending": true,
+              "usePendingAsNotPassed": true
+            }
+          }
+          JSON
+          cat reporter-config.json
+
+      - name: Run Cypress (json reporter to file)
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
         run: |
-          mkdir -p cypress/results
-
           EXTRA_ARGS=""
           if [ -n "$TEST_TAG" ]; then
             # Ajustá según tu estrategia (cypress-grep, spec, etc.)
             # EXTRA_ARGS="--env grepTags=$TEST_TAG"
             # EXTRA_ARGS="--spec cypress/e2e/${TEST_TAG}.cy.js"
-            echo "Ejecutando con filtro: $TEST_TAG (ajustá EXTRA_ARGS si corresponde)"
+            echo "Ejecutando con filtro: $TEST_TAG (ajusta EXTRA_ARGS si corresponde)"
           fi
 
-          # El reporter json imprime un JSON único por corrida en STDOUT → lo redirigimos a archivo
-          npx cypress run --reporter json $EXTRA_ARGS > cypress/results/results.json || true
+          npx cypress run \
+            --reporter cypress-multi-reporters \
+            --reporter-options "configFile=reporter-config.json" \
+            $EXTRA_ARGS || true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -54,7 +71,7 @@ jobs:
       - name: Verificar JSON generado
         run: |
           test -s cypress/results/results.json || (echo "No se generó cypress/results/results.json" && exit 1)
-          # Mostrar cabecera útil de stats (si existe)
+          # Mostrar stats útiles
           jq '.stats // {}' cypress/results/results.json || true
 
       - name: POST to n8n (JSON simple con detalles de fallos)
@@ -65,22 +82,19 @@ jobs:
 
           RESULTS_JSON="cypress/results/results.json"
 
-          # Totales robustos: cuenta por .tests[].state o por flags .pass/.fail si existieran
-          PASSED=$(jq '[.tests[]? | select((.state=="passed") or (.state=="pass") or (.pass==true))] | length' "$RESULTS_JSON")
-          FAILED=$(jq '[.tests[]? | select((.state=="failed") or (.state=="fail") or (.fail==true))] | length' "$RESULTS_JSON")
+          # Totales desde stats (del json reporter), con fallback
+          PASSED=$(jq '.stats.passes // (.passes | length) // 0' "$RESULTS_JSON")
+          FAILED=$(jq '.stats.failures // (.failures | length) // 0' "$RESULTS_JSON")
+          DURATION=$(jq '.stats.duration // 0' "$RESULTS_JSON")
 
-          # Duración: usa .stats.duration si existe; si no, suma duraciones de tests
-          DURATION=$(jq '.stats.duration // ([.tests[]? | .duration] | add // 0)' "$RESULTS_JSON")
-
-          # Detalle de fallos: suite + caso + archivo + error
-          # - "title" del reporter json es un array: [suite, sub-suite?, test]
-          #   Tomamos suite=title[0], test = último elemento (o join si preferís)
+          # Detalle de fallos
+          # - mocha-json-reporter produce .failures[] con campos .fullTitle, .title, .file, .err{message}
+          # - suite = fullTitle sin el título del test al final
           FAILS=$(jq -c '[
-            .tests[]?
-            | select((.state=="failed") or (.state=="fail") or (.fail==true))
+            .failures[]?
             | {
-                suite: ( (.title // []) | (.[0] // "") ),
-                test:  ( (.title // []) | (.[length-1] // "") ),
+                suite: (.fullTitle // "" | sub(" " + (.title // "") + "$"; "")),
+                test:  (.title // ""),
                 file:  (.file // .fullFile // ""),
                 error: (.err.message // .err // "")
               }
@@ -90,7 +104,7 @@ jobs:
           echo "Fallos:"
           echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
 
-          # Armar payload JSON con jq para evitar problemas de escape
+          # Payload robusto
           PAYLOAD=$(jq -n \
             --argjson passed   "$PASSED" \
             --argjson failed   "$FAILED" \
