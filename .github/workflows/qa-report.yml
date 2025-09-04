@@ -30,14 +30,13 @@ jobs:
       - name: Install deps
         run: |
           npm ci
-          # Reporte JSON por spec con Mochawesome (solo JSON, sin HTML)
-          npm i -D mochawesome mochawesome-merge
 
-      # Genera UN JSON por spec (no se pisan)
-      - name: Run Cypress (mochawesome JSON)
+      - name: Run Cypress (reporter json → archivo)
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
         run: |
+          mkdir -p cypress/results
+
           EXTRA_ARGS=""
           if [ -n "$TEST_TAG" ]; then
             # Ajustá según tu estrategia (cypress-grep, spec, etc.)
@@ -46,86 +45,52 @@ jobs:
             echo "Ejecutando con filtro: $TEST_TAG (ajustá EXTRA_ARGS si corresponde)"
           fi
 
-          npx cypress run \
-            --reporter mochawesome \
-            --reporter-options "overwrite=false,html=false,json=true,reportDir=cypress/reports" \
-            $EXTRA_ARGS || true
-
-      # MERGE: incluye TODOS los *.json en uno solo
-      - name: Merge mochawesome JSONs
-        run: |
-          set -euo pipefail
-          echo "Archivos en cypress/reports:"
-          ls -la cypress/reports || true
-
-          rm -f cypress/reports/_merged.json cypress/reports/mochawesome.json
-
-          shopt -s nullglob
-          FILES=(cypress/reports/*.json)
-          shopt -u nullglob
-
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No hay JSONs de mochawesome (¿falló Cypress?)"
-            exit 1
-          fi
-
-          echo "Mergeando:"
-          printf ' - %s\n' "${FILES[@]}"
-
-          npx mochawesome-merge "${FILES[@]}" > cypress/reports/_merged.json
-          mv cypress/reports/_merged.json cypress/reports/mochawesome.json
-          echo "OK -> cypress/reports/mochawesome.json"
+          # El reporter json imprime un JSON único por corrida en STDOUT → lo redirigimos a archivo
+          npx cypress run --reporter json $EXTRA_ARGS > cypress/results/results.json || true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # POST JSON simple con totales y detalle de fallos (suite + caso + archivo + error)
+      - name: Verificar JSON generado
+        run: |
+          test -s cypress/results/results.json || (echo "No se generó cypress/results/results.json" && exit 1)
+          # Mostrar cabecera útil de stats (si existe)
+          jq '.stats // {}' cypress/results/results.json || true
+
       - name: POST to n8n (JSON simple con detalles de fallos)
         env:
           WEBHOOK_URL: "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81"
         run: |
           set -euo pipefail
 
-          RESULTS_JSON="cypress/reports/mochawesome.json"
-          [ -f "$RESULTS_JSON" ] || { echo "No existe $RESULTS_JSON"; exit 1; }
+          RESULTS_JSON="cypress/results/results.json"
 
-          echo "Stats (según .stats del merge):"
-          jq '.stats | {tests, passes, failures, pending, skipped, duration}' "$RESULTS_JSON" || true
+          # Totales robustos: cuenta por .tests[].state o por flags .pass/.fail si existieran
+          PASSED=$(jq '[.tests[]? | select((.state=="passed") or (.state=="pass") or (.pass==true))] | length' "$RESULTS_JSON")
+          FAILED=$(jq '[.tests[]? | select((.state=="failed") or (.state=="fail") or (.fail==true))] | length' "$RESULTS_JSON")
 
-          # ✅ Conteo REAL robusto: contempla "state", "pass" y "fail"
-          PASSED=$(jq '[ .. | objects 
-            | select( has("state") or has("pass") or has("fail") )
-            | select( (.state=="passed") or (.state=="pass") or (.pass==true) )
-          ] | length' "$RESULTS_JSON")
+          # Duración: usa .stats.duration si existe; si no, suma duraciones de tests
+          DURATION=$(jq '.stats.duration // ([.tests[]? | .duration] | add // 0)' "$RESULTS_JSON")
 
-          FAILED=$(jq '[ .. | objects 
-            | select( has("state") or has("pass") or has("fail") )
-            | select( (.state=="failed") or (.state=="fail") or (.fail==true) )
-          ] | length' "$RESULTS_JSON")
+          # Detalle de fallos: suite + caso + archivo + error
+          # - "title" del reporter json es un array: [suite, sub-suite?, test]
+          #   Tomamos suite=title[0], test = último elemento (o join si preferís)
+          FAILS=$(jq -c '[
+            .tests[]?
+            | select((.state=="failed") or (.state=="fail") or (.fail==true))
+            | {
+                suite: ( (.title // []) | (.[0] // "") ),
+                test:  ( (.title // []) | (.[length-1] // "") ),
+                file:  (.file // .fullFile // ""),
+                error: (.err.message // .err // "")
+              }
+          ]' "$RESULTS_JSON")
 
-          # Duración: .stats.duration o suma por test
-          DURATION=$(jq '.stats.duration // ([ .. | objects | select(has("duration")) | .duration ] | add // 0)' "$RESULTS_JSON")
-
-          # 🔎 Detalle de fallos: suite + caso + archivo + error
-          # - suite: intentamos .parentTitle si existe; si no, derivamos de fullTitle quitando title al final.
-          # - test: .title
-          # - file: .file (si viene), o .fullFile
-          # - error: mensaje de error si viene en .err.message / .err
-          FAILS=$(jq -c '[ .. | objects
-              | select( (has("state") or has("fail")) and ((.state=="failed") or (.state=="fail") or (.fail==true)) )
-              | {
-                  suite: (.parentTitle // (.fullTitle // "" | sub(" " + (.title//"") + "$"; ""))),
-                  test:  (.title // ""),
-                  file:  (.file // .fullFile // ""),
-                  error: (.err.message // .err // "")
-                }
-            ]' "$RESULTS_JSON")
-
-          echo "Conteo real → passed=$PASSED failed=$FAILED durationMs=$DURATION"
-          echo "Fallos detectados:"
+          echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
+          echo "Fallos:"
           echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
 
-          # Armar payload JSON de forma segura con jq
+          # Armar payload JSON con jq para evitar problemas de escape
           PAYLOAD=$(jq -n \
             --argjson passed   "$PASSED" \
             --argjson failed   "$FAILED" \
@@ -140,3 +105,9 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" \
             -w "\nHTTP_CODE=%{http_code}\n"
+
+      - name: Upload artifact (opcional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-json-results
+          path: cypress/results/results.json
