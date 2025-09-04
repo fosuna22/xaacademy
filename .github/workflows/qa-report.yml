@@ -89,7 +89,7 @@ jobs:
             --reportDir cypress/results \
             --inline
 
-      - name: Crear summary.json (total, passed, failed, pending, duration, passedTests)
+      - name: Crear summary.json (total, passed, failed, pending, duration, passedTests, failedTests)
         run: |
           set -euo pipefail
           MERGED="cypress/results/merged.json"
@@ -106,28 +106,47 @@ jobs:
             | select(has("tests"))
             | .tests[]?
             | select(.state=="passed" or .pass==true)
-            | { fullTitle: (.fullTitle // .title // ""), file: (.file // .fullFile // ""), duration: (.duration // 0) }
+            | {
+                fullTitle: (.fullTitle // .title // ""),
+                file: (.file // .fullFile // ""),
+                duration: (.duration // 0)
+              }
           ]' "$MERGED")
 
-          # Armamos el resumen que te sirve para el webhook
+          FAILED_LIST=$(jq -c '[..
+            | objects
+            | select(has("tests"))
+            | .tests[]?
+            | select(.state=="failed" or .fail==true)
+            | {
+                fullTitle: (.fullTitle // .title // ""),
+                file: (.file // .fullFile // ""),
+                duration: (.duration // 0),
+                error: (.err.message // .err // .error // "")
+              }
+          ]' "$MERGED")
+
+          # Resumen final para el webhook
           jq -n \
-            --argjson total     "$TOTAL" \
-            --argjson passed    "$PASSED" \
-            --argjson failed    "$FAILED" \
-            --argjson pending   "$PENDING" \
-            --argjson duration  "$DURATION" \
-            --argjson passedArr "$PASSED_LIST" \
+            --argjson total      "$TOTAL" \
+            --argjson passed     "$PASSED" \
+            --argjson failed     "$FAILED" \
+            --argjson pending    "$PENDING" \
+            --argjson duration   "$DURATION" \
+            --argjson passedArr  "$PASSED_LIST" \
+            --argjson failedArr  "$FAILED_LIST" \
             '{
               total: $total,
               passed: $passed,
               failed: $failed,
               pending: $pending,
               durationMs: $duration,
-              passedTests: $passedArr
+              passedTests: $passedArr,
+              failedTests: $failedArr
             }' > cypress/results/summary.json
 
           echo "Resumen:"
-          cat cypress/results/summary.json | jq .
+          jq . cypress/results/summary.json
 
       - name: POST summary.json a n8n
         env:
