@@ -50,13 +50,11 @@ jobs:
 
       - name: Extraer JSON limpio del stdout
         run: |
-          node -e "const fs=require('fs');const p='cypress/results/stdout.txt';const s=fs.readFileSync(p,'utf8');let start=-1,depth=0,pos=0,lastStart=-1,lastEnd=-1;for(let i=0;i<s.length;i++){const c=s[i];if(c=='{'){if(depth===0) start=i;depth++;}else if(c=='}'){depth--;if(depth===0&&start!==-1){lastStart=start;lastEnd=i+1;}}}if(lastStart>=0){const json=s.slice(lastStart,lastEnd);fs.writeFileSync('cypress/results/results.json',json);}else{process.exitCode=2;console.error('No se encontró JSON en stdout');}"
+          node -e "const fs=require('fs');const p='cypress/results/stdout.txt';const s=fs.readFileSync(p,'utf8');let start=-1,depth=0,lastStart=-1,lastEnd=-1;for(let i=0;i<s.length;i++){const c=s[i];if(c=='{'){if(depth===0)start=i;depth++}else if(c=='}'){depth--;if(depth===0&&start!==-1){lastStart=start;lastEnd=i+1}}}if(lastStart>=0){fs.writeFileSync('cypress/results/results.json',s.slice(lastStart,lastEnd))}else{process.exitCode=2;console.error('No se encontró JSON en stdout')}"
           test -s cypress/results/results.json || (echo 'No se generó cypress/results/results.json' && exit 1)
           # Mostrar stats si existen
+          sudo apt-get update && sudo apt-get install -y jq
           jq '.stats // {}' cypress/results/results.json || true
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: POST to n8n (JSON simple con detalles de fallos)
         env:
@@ -65,31 +63,25 @@ jobs:
           set -euo pipefail
           RESULTS_JSON="cypress/results/results.json"
 
-          # Totales robustos: cuentan por .tests[].state o flags .pass/.fail si aparecieran
-          PASSED=$(jq '[.tests[]? | select((.state=="passed") or (.state=="pass") or (.pass==true))] | length' "$RESULTS_JSON")
-          FAILED=$(jq '[.tests[]? | select((.state=="failed") or (.state=="fail") or (.fail==true))] | length' "$RESULTS_JSON")
+          # Totales (robustos)
+          PASSED=$(jq -r '[.tests[]? | select(.state=="passed" or .pass==true)] | length' "$RESULTS_JSON")
+          FAILED=$(jq -r '[.tests[]? | select(.state=="failed" or .fail==true)] | length' "$RESULTS_JSON")
+          DURATION=$(jq -r '.stats.duration // ([.tests[]? | .duration] | add // 0)' "$RESULTS_JSON")
 
-          # Duración: usa .stats.duration si existe; si no, suma la de los tests
-          DURATION=$(jq '.stats.duration // ([.tests[]? | .duration] | add // 0)' "$RESULTS_JSON")
-
-          # Detalle de fallos (suite + caso + archivo + error)
-          # En el reporter json, "title" es un array: [suite, ... , test]
-          FAILS=$(jq -c '[
-            .tests[]?
-            | select((.state=="failed") or (.state=="fail") or (.fail==true)))
+          # Detalle de fallos: suite + caso + archivo + error
+          FAILS=$(jq -c '[.tests[]?
+            | select(.state=="failed" or .fail==true)
             | {
-                suite: ( (.title // []) | (.[0] // "") ),
-                test:  ( (.title // []) | (.[length-1] // "") ),
+                suite: ((.title // []) | (.[0] // "")),
+                test:  ((.title // []) | (.[length-1] // "")),
                 file:  (.file // .fullFile // ""),
                 error: (.err.message // .err // "")
-              }
-          ]' "$RESULTS_JSON")
+              } ]' "$RESULTS_JSON")
 
           echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
-          echo "Fallos:"
           echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
 
-          # Payload
+          # Armar payload
           PAYLOAD=$(jq -n \
             --argjson passed   "$PASSED" \
             --argjson failed   "$FAILED" \
@@ -98,14 +90,14 @@ jobs:
             '{passed:$passed, failed:$failed, durationMs:$duration, failures:$failures}')
 
           echo "POST → $WEBHOOK_URL"
-          echo "$PAYLOAD" | jq . || true
+          echo "$PAYLOAD" | jq .
 
           curl -sS -f -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" \
             -w "\nHTTP_CODE=%{http_code}\n"
 
-      - name: Upload artifact (opcional)
+      - name: Upload artifacts (opcional)
         uses: actions/upload-artifact@v4
         with:
           name: cypress-json-results
