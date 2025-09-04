@@ -51,26 +51,35 @@ jobs:
             --reporter-options "overwrite=false,html=false,json=true,reportDir=cypress/reports" \
             $EXTRA_ARGS || true
 
+      # MERGE corregido: incluye TODOS los *.json a un archivo temporal, luego renombra
       - name: Merge mochawesome JSONs (seguro)
         run: |
           set -euo pipefail
           echo "Archivos generados en cypress/reports:"
           ls -la cypress/reports || true
 
-          # Asegurar que no exista un merge previo
-          rm -f cypress/reports/mochawesome.json
+          # limpiar merges previos
+          rm -f cypress/reports/_merged.json cypress/reports/mochawesome.json
 
-          if compgen -G "cypress/reports/mochawesome_*.json" > /dev/null; then
-            echo "Haciendo merge de mochawesome_*.json ..."
-            npx mochawesome-merge cypress/reports/mochawesome_*.json > cypress/reports/_merged.json
-            mv cypress/reports/_merged.json cypress/reports/mochawesome.json
-            echo "Merge listo -> cypress/reports/mochawesome.json"
-          elif [ -f "cypress/reports/mochawesome.json" ]; then
-            echo "Sólo existe mochawesome.json (una spec). Lo usamos tal cual."
-          else
+          # entradas a mergear: base + numerados
+          shopt -s nullglob
+          FILES=(cypress/reports/*.json)
+          shopt -u nullglob
+
+          if [ ${#FILES[@]} -eq 0 ]; then
             echo "No se generaron JSONs de mochawesome (¿no hubo specs? ¿falló Cypress?)"
             exit 1
           fi
+
+          echo "Entradas a mergear:"
+          printf ' - %s\n' "${FILES[@]}"
+
+          # merge a archivo temporal que NO coincida con el glob
+          npx mochawesome-merge "${FILES[@]}" > cypress/reports/_merged.json
+
+          # renombrar al estándar
+          mv cypress/reports/_merged.json cypress/reports/mochawesome.json
+          echo "Merge listo -> cypress/reports/mochawesome.json"
 
       - name: Build Mochawesome HTML
         run: |
