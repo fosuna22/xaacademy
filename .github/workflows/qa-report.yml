@@ -1,4 +1,4 @@
-name: QA Report (manualaa)
+name: QA Report (manual - JSON simple)
 
 on:
   workflow_dispatch:
@@ -30,11 +30,11 @@ jobs:
       - name: Install deps
         run: |
           npm ci
-          # Herramientas de reportes
-          npm i -D mochawesome mochawesome-merge mochawesome-report-generator
+          # Reporte JSON por spec con Mochawesome (solo JSON, sin HTML)
+          npm i -D mochawesome mochawesome-merge
 
       # Genera UN JSON por spec (no se pisan)
-      - name: Run Cypress with Mochawesome
+      - name: Run Cypress (mochawesome JSON)
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
         run: |
@@ -51,95 +51,92 @@ jobs:
             --reporter-options "overwrite=false,html=false,json=true,reportDir=cypress/reports" \
             $EXTRA_ARGS || true
 
-      # MERGE corregido: incluye TODOS los *.json a un archivo temporal, luego renombra
-      - name: Merge mochawesome JSONs (seguro)
+      # MERGE: incluye TODOS los *.json en uno solo
+      - name: Merge mochawesome JSONs
         run: |
           set -euo pipefail
-          echo "Archivos generados en cypress/reports:"
+          echo "Archivos en cypress/reports:"
           ls -la cypress/reports || true
 
-          # limpiar merges previos
           rm -f cypress/reports/_merged.json cypress/reports/mochawesome.json
 
-          # entradas a mergear: base + numerados
           shopt -s nullglob
           FILES=(cypress/reports/*.json)
           shopt -u nullglob
 
           if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No se generaron JSONs de mochawesome (¿no hubo specs? ¿falló Cypress?)"
+            echo "No hay JSONs de mochawesome (¿falló Cypress?)"
             exit 1
           fi
 
-          echo "Entradas a mergear:"
+          echo "Mergeando:"
           printf ' - %s\n' "${FILES[@]}"
 
-          # merge a archivo temporal que NO coincida con el glob
           npx mochawesome-merge "${FILES[@]}" > cypress/reports/_merged.json
-
-          # renombrar al estándar
           mv cypress/reports/_merged.json cypress/reports/mochawesome.json
-          echo "Merge listo -> cypress/reports/mochawesome.json"
-
-      - name: Build Mochawesome HTML
-        run: |
-          npx marge cypress/reports/mochawesome.json -f mochawesome -o cypress/reports
-          test -f cypress/reports/mochawesome.html || (echo "No se pudo generar mochawesome.html" && exit 1)
+          echo "OK -> cypress/reports/mochawesome.json"
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: "POST to n8n (multipart: resumen + html + json)"
+      # POST JSON simple con totales y detalle de fallos (suite + caso + archivo + error)
+      - name: POST to n8n (JSON simple con detalles de fallos)
         env:
           WEBHOOK_URL: "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81"
         run: |
           set -euo pipefail
 
           RESULTS_JSON="cypress/reports/mochawesome.json"
-          RESULTS_HTML="cypress/reports/mochawesome.html"
-
-          # Validaciones
           [ -f "$RESULTS_JSON" ] || { echo "No existe $RESULTS_JSON"; exit 1; }
-          [ -f "$RESULTS_HTML" ] || { echo "No existe $RESULTS_HTML"; exit 1; }
 
           echo "Stats (según .stats del merge):"
           jq '.stats | {tests, passes, failures, pending, skipped, duration}' "$RESULTS_JSON" || true
 
-          # ✅ Conteo REAL por estado recorriendo todo el árbol
-          PASSED=$(jq '[ .. | objects | select(has("state")) | select(.state=="passed" or .state=="pass") ] | length' "$RESULTS_JSON")
-          FAILED=$(jq '[ .. | objects | select(has("state")) | select(.state=="failed" or .state=="fail") ] | length' "$RESULTS_JSON")
-          # Duración: usa .stats.duration si existe, si no suma por test
+          # ✅ Conteo REAL robusto: contempla "state", "pass" y "fail"
+          PASSED=$(jq '[ .. | objects 
+            | select( has("state") or has("pass") or has("fail") )
+            | select( (.state=="passed") or (.state=="pass") or (.pass==true) )
+          ] | length' "$RESULTS_JSON")
+
+          FAILED=$(jq '[ .. | objects 
+            | select( has("state") or has("pass") or has("fail") )
+            | select( (.state=="failed") or (.state=="fail") or (.fail==true) )
+          ] | length' "$RESULTS_JSON")
+
+          # Duración: .stats.duration o suma por test
           DURATION=$(jq '.stats.duration // ([ .. | objects | select(has("duration")) | .duration ] | add // 0)' "$RESULTS_JSON")
 
+          # 🔎 Detalle de fallos: suite + caso + archivo + error
+          # - suite: intentamos .parentTitle si existe; si no, derivamos de fullTitle quitando title al final.
+          # - test: .title
+          # - file: .file (si viene), o .fullFile
+          # - error: mensaje de error si viene en .err.message / .err
+          FAILS=$(jq -c '[ .. | objects
+              | select( (has("state") or has("fail")) and ((.state=="failed") or (.state=="fail") or (.fail==true)) )
+              | {
+                  suite: (.parentTitle // (.fullTitle // "" | sub(" " + (.title//"") + "$"; ""))),
+                  test:  (.title // ""),
+                  file:  (.file // .fullFile // ""),
+                  error: (.err.message // .err // "")
+                }
+            ]' "$RESULTS_JSON")
+
           echo "Conteo real → passed=$PASSED failed=$FAILED durationMs=$DURATION"
+          echo "Fallos detectados:"
+          echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
+
+          # Armar payload JSON de forma segura con jq
+          PAYLOAD=$(jq -n \
+            --argjson passed   "$PASSED" \
+            --argjson failed   "$FAILED" \
+            --argjson duration "$DURATION" \
+            --argjson failures "$FAILS" \
+            '{passed:$passed, failed:$failed, durationMs:$duration, failures:$failures}')
+
           echo "POST → $WEBHOOK_URL"
+          echo "$PAYLOAD" | jq . || true
 
-          HTTP_CODE=$(curl -sS -X POST "$WEBHOOK_URL" \
-            -H "Expect:" \
-            -F "passed=$PASSED" \
-            -F "failed=$FAILED" \
-            -F "durationMs=$DURATION" \
-            -F "report=@${RESULTS_HTML};type=text/html" \
-            -F "reportJson=@${RESULTS_JSON};type=application/json" \
-            -w "%{http_code}" -o /tmp/n8n_resp.txt) || true
-
-          echo "HTTP_CODE=$HTTP_CODE"
-          echo "Respuesta n8n:"
-          cat /tmp/n8n_resp.txt || true
-          echo
-
-          if [ "${HTTP_CODE:0:1}" != "2" ]; then
-            echo "⚠️ Multipart falló (HTTP $HTTP_CODE). Probamos envío JSON simple…"
-            curl -sS -X POST "$WEBHOOK_URL" \
-              -H "Content-Type: application/json" \
-              -d "{\"passed\":$PASSED,\"failed\":$FAILED,\"durationMs\":$DURATION}" \
-              -w "\nHTTP_CODE=%{http_code}\n" -o /tmp/n8n_resp_b.txt || true
-            cat /tmp/n8n_resp_b.txt || true
-            echo
-          fi
-
-      - name: Upload artifacts (opcional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mochawesome-report
-          path: cypress/reports/
+          curl -sS -f -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            -w "\nHTTP_CODE=%{http_code}\n"
