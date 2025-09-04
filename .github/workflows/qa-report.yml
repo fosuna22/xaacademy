@@ -1,4 +1,4 @@
-name: QA Report (manual - JSON simple y robusto)
+name: QA Report (Cypress + Mochawesome)
 
 on:
   workflow_dispatch:
@@ -30,92 +30,120 @@ jobs:
       - name: Install deps
         run: |
           npm ci
-          npm i -D mocha-json-reporter
+          # Reportería Mochawesome
+          npm i -D cypress-multi-reporters mochawesome mochawesome-merge mochawesome-report-generator
+          # Utilidades
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Run Cypress con reporter JSON a archivo
+      - name: Reporter config (Mochawesome → JSON)
+        run: |
+          rm -rf cypress/results || true
+          mkdir -p cypress/results
+          cat > reporter-config.json << 'JSON'
+          {
+            "reporterEnabled": "mochawesome",
+            "mochawesomeReporterOptions": {
+              "reportDir": "cypress/results",
+              "overwrite": false,
+              "quiet": true,
+              "html": false,
+              "json": true
+            }
+          }
+          JSON
+
+      - name: Run Cypress (genera mochawesome *.json)
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
           CI: "1"
         run: |
           set -euxo pipefail
-          mkdir -p cypress/results
 
           EXTRA_ARGS=""
           if [ -n "$TEST_TAG" ]; then
             echo "Ejecutando con filtro: $TEST_TAG"
-            # Si usas cypress-grep, descomenta:
+            # Si usás cypress-grep, descomentá:
             # EXTRA_ARGS="--env grepTags=$TEST_TAG"
-            # O si filtras por spec:
+            # O filtrá por spec si preferís:
             # EXTRA_ARGS="--spec cypress/e2e/${TEST_TAG}.cy.js"
           fi
 
-          # Ejecuta Cypress usando directamente el reporter de Mocha (sin multi-reporters)
+          # Ejecuta Cypress con cypress-multi-reporters usando Mochawesome
           npx cypress run \
-            --reporter mocha-json-reporter \
-            --reporter-options "output=cypress/results/results.json,includePending=true" \
-            $EXTRA_ARGS || true
+            --reporter cypress-multi-reporters \
+            --reporter-options "configFile=reporter-config.json" \
+            $EXTRA_ARGS || true   # no rompemos el job por fallas de tests
 
-          # PLAN B: si por algún motivo el reporter escribió con otro nombre/ruta, lo detectamos y movemos
-          if [ ! -s cypress/results/results.json ]; then
-            echo "results.json no encontrado; intento localizar otro JSON de reporter…"
-            FOUND=$( (ls -1 **/*.json 2>/dev/null || true) | grep -E '(results|report|mocha).*\.json$' || true )
-            if [ -n "$FOUND" ]; then
-              echo "Encontrado: $FOUND → moviendo a cypress/results/results.json"
-              mv "$FOUND" cypress/results/results.json
-            fi
-          fi
+          # Validación mínima: ¿hay al menos un JSON de mochawesome?
+          test -n "$(ls -1 cypress/results/*.json 2>/dev/null | head -n1)" || (echo "Mochawesome no generó JSON" && exit 1)
 
-          # Falla si aún no existe (para que el error sea claro)
-          test -s cypress/results/results.json || (echo "No se generó cypress/results/results.json" && exit 1)
-
-      - name: Mostrar stats rápidas
+      - name: Merge mochawesome → merged.json
         run: |
-          echo "Stats:"
-          jq '.stats // {}' cypress/results/results.json || true
+          # Une todos los JSON de mochawesome en uno solo
+          npx mochawesome-merge cypress/results/*.json > cypress/results/merged.json
+          test -s cypress/results/merged.json
 
-      - name: POST to n8n (JSON simple con detalles de fallos)
+      - name: (Opcional) Generar HTML a partir del merge
+        run: |
+          npx marge cypress/results/merged.json \
+            --reportDir cypress/results \
+            --inline
+
+      - name: Crear summary.json (total, passed, failed, pending, duration, passedTests)
+        run: |
+          set -euo pipefail
+          MERGED="cypress/results/merged.json"
+
+          # Totales a partir de la estructura mochawesome-merge
+          TOTAL=$(jq -r '.stats.tests // ([..|objects|select(has("tests"))|.tests[]?|select(.state!="pending")]|length // 0)' "$MERGED")
+          PASSED=$(jq -r '[..|objects|select(has("tests"))|.tests[]?|select(.state=="passed" or .pass==true)]|length' "$MERGED")
+          FAILED=$(jq -r '[..|objects|select(has("tests"))|.tests[]?|select(.state=="failed" or .fail==true)]|length' "$MERGED")
+          PENDING=$(jq -r '[..|objects|select(has("tests"))|.tests[]?|select(.state=="pending")]|length' "$MERGED")
+          DURATION=$(jq -r '.stats.duration // ([..|objects|select(has("tests"))|.tests[]?|.duration] | add // 0)' "$MERGED")
+
+          PASSED_LIST=$(jq -c '[..
+            | objects
+            | select(has("tests"))
+            | .tests[]?
+            | select(.state=="passed" or .pass==true)
+            | { fullTitle: (.fullTitle // .title // ""), file: (.file // .fullFile // ""), duration: (.duration // 0) }
+          ]' "$MERGED")
+
+          # Armamos el resumen que te sirve para el webhook
+          jq -n \
+            --argjson total     "$TOTAL" \
+            --argjson passed    "$PASSED" \
+            --argjson failed    "$FAILED" \
+            --argjson pending   "$PENDING" \
+            --argjson duration  "$DURATION" \
+            --argjson passedArr "$PASSED_LIST" \
+            '{
+              total: $total,
+              passed: $passed,
+              failed: $failed,
+              pending: $pending,
+              durationMs: $duration,
+              passedTests: $passedArr
+            }' > cypress/results/summary.json
+
+          echo "Resumen:"
+          cat cypress/results/summary.json | jq .
+
+      - name: POST summary.json a n8n
         env:
           WEBHOOK_URL: "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81"
         run: |
           set -euo pipefail
-          RESULTS_JSON="cypress/results/results.json"
-
-          # Estructura típica de mocha-json-reporter:
-          # { stats:{passes, failures, duration, ...}, passes:[...], failures:[...], pending:[...], tests:[...] }
-          PASSED=$(jq -r '.stats.passes // (.passes|length // 0)' "$RESULTS_JSON")
-          FAILED=$(jq -r '.stats.failures // (.failures|length // 0)' "$RESULTS_JSON")
-          DURATION=$(jq -r '.stats.duration // 0' "$RESULTS_JSON")
-
-          FAILS=$(jq -c '[.failures[]?
-            | {
-                suite: ((.fullTitle // .title // "") | (type=="string" ? . : (.[0] // ""))),
-                test:  ((.title // .fullTitle // "")   | (type=="string" ? . : (.[length-1] // ""))),
-                file:  (.file // .fullFile // ""),
-                error: (.err.message // .err // .error // "")
-              } ]' "$RESULTS_JSON")
-
-          echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
-          echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
-
-          PAYLOAD=$(jq -n \
-            --argjson passed   "$PASSED" \
-            --argjson failed   "$FAILED" \
-            --argjson duration "$DURATION" \
-            --argjson failures "$FAILS" \
-            '{passed:$passed, failed:$failed, durationMs:$duration, failures:$failures}')
-
-          echo "POST → $WEBHOOK_URL"
-          echo "$PAYLOAD" | jq .
-
           curl -sS -f -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
+            --data-binary "@cypress/results/summary.json" \
             -w "\nHTTP_CODE=%{http_code}\n"
 
-      - name: Upload artifacts (JSON)
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cypress-json-results
+          name: cypress-mochawesome-results
           path: |
-            cypress/results/results.json
+            reporter-config.json
+            cypress/results/*.json
+            cypress/results/*.html
