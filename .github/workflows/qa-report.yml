@@ -1,9 +1,16 @@
-name: QA Report
+name: QA Report (manual)
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch a ejecutar'
+        required: true
+        default: 'main'
+      tag:
+        description: 'Tag/grep para las pruebas (opcional, ej: @login)'
+        required: false
+        default: ''
 
 jobs:
   cypress-and-report:
@@ -12,8 +19,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Setup Node
+      # si usás nvm en el repo, ajustá la versión
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -25,21 +35,31 @@ jobs:
           npm i -D mochawesome mochawesome-merge
 
       - name: Run Cypress with Mochawesome
+        env:
+          TEST_TAG: ${{ github.event.inputs.tag }}
         run: |
+          # Si usás tags/grep, agregalos acá (ajusta flags según tu proyecto)
+          EXTRA_ARGS=""
+          if [ -n "$TEST_TAG" ]; then
+            # ejemplos posibles:
+            # EXTRA_ARGS="--env grepTags=$TEST_TAG"                   # cypress-grep por tag
+            # EXTRA_ARGS="--spec cypress/e2e/${TEST_TAG}.cy.js"       # si usas archivo por nombre
+            echo "Ejecutando con filtro: $TEST_TAG (ajusta EXTRA_ARGS si corresponde)"
+          fi
+
           npx cypress run \
             --reporter mochawesome \
-            --reporter-options "reportFilename=mochawesome,overwrite=true,html=false,json=true,reportDir=cypress/reports" || true
+            --reporter-options "reportFilename=mochawesome,overwrite=true,html=false,json=true,reportDir=cypress/reports" \
+            $EXTRA_ARGS || true
 
       - name: Merge mochawesome JSONs
         run: |
           echo "Archivos generados:"
           ls -la cypress/reports || true
 
-          # Si ya existe un mochawesome.json único, lo usamos; si hay varios, hacemos merge
           if [ -f "cypress/reports/mochawesome.json" ]; then
             echo "Encontrado mochawesome.json único."
           else
-            # Verifica que haya al menos algún json
             if ls cypress/reports/*.json 1> /dev/null 2>&1; then
               npx mochawesome-merge cypress/reports/*.json > cypress/reports/mochawesome.json
               echo "Merge listo -> cypress/reports/mochawesome.json"
