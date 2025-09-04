@@ -80,7 +80,7 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: POST to n8n (multipart: resumen + html + json)
+      - name: "POST to n8n (multipart: resumen + html + json)"
         env:
           WEBHOOK_URL: "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81"
         run: |
