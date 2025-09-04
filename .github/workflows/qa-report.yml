@@ -30,48 +30,48 @@ jobs:
       - name: Install deps
         run: |
           npm ci
-          # Reporte JSON a archivo (no a stdout)
-          npm i -D cypress-multi-reporters mocha-json-reporter
+          npm i -D mocha-json-reporter
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Create reporter config (mocha-json → archivo)
-        run: |
-          mkdir -p cypress/results
-          cat > reporter-config.json << 'JSON'
-          {
-            "reporterEnabled": "mocha-json-reporter",
-            "mochaJsonReporterReporterOptions": {
-              "output": "cypress/results/results.json",
-              "includePending": true
-            }
-          }
-          JSON
-
-      - name: Run Cypress (genera cypress/results/results.json)
+      - name: Run Cypress con reporter JSON a archivo
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
+          CI: "1"
         run: |
-          set -e
+          set -euxo pipefail
+          mkdir -p cypress/results
+
           EXTRA_ARGS=""
           if [ -n "$TEST_TAG" ]; then
             echo "Ejecutando con filtro: $TEST_TAG"
             # Si usas cypress-grep, descomenta:
             # EXTRA_ARGS="--env grepTags=$TEST_TAG"
-            # O si querés filtrar por spec, adaptá según tu convención:
+            # O si filtras por spec:
             # EXTRA_ARGS="--spec cypress/e2e/${TEST_TAG}.cy.js"
           fi
 
+          # Ejecuta Cypress usando directamente el reporter de Mocha (sin multi-reporters)
           npx cypress run \
-            --reporter cypress-multi-reporters \
-            --reporter-options configFile=reporter-config.json \
+            --reporter mocha-json-reporter \
+            --reporter-options "output=cypress/results/results.json,includePending=true" \
             $EXTRA_ARGS || true
 
-          # Verificación mínima de que el JSON existe
+          # PLAN B: si por algún motivo el reporter escribió con otro nombre/ruta, lo detectamos y movemos
+          if [ ! -s cypress/results/results.json ]; then
+            echo "results.json no encontrado; intento localizar otro JSON de reporter…"
+            FOUND=$( (ls -1 **/*.json 2>/dev/null || true) | grep -E '(results|report|mocha).*\.json$' || true )
+            if [ -n "$FOUND" ]; then
+              echo "Encontrado: $FOUND → moviendo a cypress/results/results.json"
+              mv "$FOUND" cypress/results/results.json
+            fi
+          fi
+
+          # Falla si aún no existe (para que el error sea claro)
           test -s cypress/results/results.json || (echo "No se generó cypress/results/results.json" && exit 1)
 
       - name: Mostrar stats rápidas
         run: |
-          echo "Stats (si existen):"
+          echo "Stats:"
           jq '.stats // {}' cypress/results/results.json || true
 
       - name: POST to n8n (JSON simple con detalles de fallos)
@@ -81,20 +81,16 @@ jobs:
           set -euo pipefail
           RESULTS_JSON="cypress/results/results.json"
 
-          # Totales robustos (mocha-json-reporter estructura)
-          # Estructuras típicas:
-          # - .stats.passes / .stats.failures / .stats.duration
-          # - .tests[] con .state == "passed"/"failed" (según versión)
-          PASSED=$(jq -r '.stats.passes // ([.tests[]? | select(.state=="passed" or .pass==true)] | length // 0)' "$RESULTS_JSON")
-          FAILED=$(jq -r '.stats.failures // ([.tests[]? | select(.state=="failed" or .fail==true)] | length // 0)' "$RESULTS_JSON")
+          # Estructura típica de mocha-json-reporter:
+          # { stats:{passes, failures, duration, ...}, passes:[...], failures:[...], pending:[...], tests:[...] }
+          PASSED=$(jq -r '.stats.passes // (.passes|length // 0)' "$RESULTS_JSON")
+          FAILED=$(jq -r '.stats.failures // (.failures|length // 0)' "$RESULTS_JSON")
           DURATION=$(jq -r '.stats.duration // 0' "$RESULTS_JSON")
 
-          # Detalle de fallos: suite + caso + archivo + error (con tolerancia de campos)
-          FAILS=$(jq -c '[.tests[]?
-            | select((.state=="failed") or (.fail==true))
+          FAILS=$(jq -c '[.failures[]?
             | {
                 suite: ((.fullTitle // .title // "") | (type=="string" ? . : (.[0] // ""))),
-                test:  ((.title // .fullTitle // "") | (type=="string" ? . : (.[length-1] // ""))),
+                test:  ((.title // .fullTitle // "")   | (type=="string" ? . : (.[length-1] // ""))),
                 file:  (.file // .fullFile // ""),
                 error: (.err.message // .err // .error // "")
               } ]' "$RESULTS_JSON")
@@ -102,7 +98,6 @@ jobs:
           echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
           echo "$FAILS" | jq -r '.[] | "- " + (.suite // "") + " :: " + (.test // "")' || true
 
-          # Armar payload
           PAYLOAD=$(jq -n \
             --argjson passed   "$PASSED" \
             --argjson failed   "$FAILED" \
@@ -118,10 +113,9 @@ jobs:
             -d "$PAYLOAD" \
             -w "\nHTTP_CODE=%{http_code}\n"
 
-      - name: Upload artifacts (JSON + logs)
+      - name: Upload artifacts (JSON)
         uses: actions/upload-artifact@v4
         with:
           name: cypress-json-results
           path: |
-            reporter-config.json
             cypress/results/results.json
