@@ -23,7 +23,6 @@ jobs:
           ref: ${{ github.event.inputs.branch }}
 
       - name: Setup Node
-      # si usás nvm en el repo, ajustá la versión
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -31,65 +30,100 @@ jobs:
       - name: Install deps
         run: |
           npm ci
-          # Aseguramos reporter y merge tool
-          npm i -D mochawesome mochawesome-merge
+          # Reporters/mergers para mochawesome
+          npm i -D mochawesome mochawesome-merge mochawesome-report-generator
 
+      # IMPORTANTEEEE: generamos UN JSON POR SPEC (no se pisan)
       - name: Run Cypress with Mochawesome
         env:
           TEST_TAG: ${{ github.event.inputs.tag }}
         run: |
-          # Si usás tags/grep, agregalos acá (ajusta flags según tu proyecto)
           EXTRA_ARGS=""
           if [ -n "$TEST_TAG" ]; then
-            # ejemplos posibles:
-            # EXTRA_ARGS="--env grepTags=$TEST_TAG"                   # cypress-grep por tag
-            # EXTRA_ARGS="--spec cypress/e2e/${TEST_TAG}.cy.js"       # si usas archivo por nombre
+            # Ajustá según tu estrategia (cypress-grep, spec, etc.)
+            # EXTRA_ARGS="--env grepTags=$TEST_TAG"
+            # EXTRA_ARGS="--spec cypress/e2e/${TEST_TAG}.cy.js"
             echo "Ejecutando con filtro: $TEST_TAG (ajusta EXTRA_ARGS si corresponde)"
           fi
 
           npx cypress run \
             --reporter mochawesome \
-            --reporter-options "reportFilename=mochawesome,overwrite=true,html=false,json=true,reportDir=cypress/reports" \
+            --reporter-options "overwrite=false,html=false,json=true,reportDir=cypress/reports" \
             $EXTRA_ARGS || true
 
       - name: Merge mochawesome JSONs
         run: |
-          echo "Archivos generados:"
+          echo "Archivos generados en cypress/reports:"
           ls -la cypress/reports || true
 
-          if [ -f "cypress/reports/mochawesome.json" ]; then
-            echo "Encontrado mochawesome.json único."
+          # Merge de TODOS los JSONs en uno solo
+          if ls cypress/reports/*.json 1> /dev/null 2>&1; then
+            npx mochawesome-merge cypress/reports/*.json > cypress/reports/mochawesome.json
+            echo "Merge listo -> cypress/reports/mochawesome.json"
           else
-            if ls cypress/reports/*.json 1> /dev/null 2>&1; then
-              npx mochawesome-merge cypress/reports/*.json > cypress/reports/mochawesome.json
-              echo "Merge listo -> cypress/reports/mochawesome.json"
-            else
-              echo "No se generaron JSONs de mochawesome (¿no hubo specs? ¿falló Cypress?)"
-              exit 1
-            fi
+            echo "No se generaron JSONs de mochawesome (¿no hubo specs? ¿falló Cypress?)"
+            exit 1
           fi
+
+      - name: Build Mochawesome HTML
+        run: |
+          # Generar el HTML bonito a partir del merge
+          npx marge cypress/reports/mochawesome.json -f mochawesome -o cypress/reports
+          test -f cypress/reports/mochawesome.html || (echo "No se pudo generar mochawesome.html" && exit 1)
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Parse results and POST to n8n
+      # Enviamos RESUMEN + adjuntos (HTML + JSON) a n8n (multipart/form-data)
+      - name: "POST to n8n (multipart: resumen + html + json)"
+        env:
+          WEBHOOK_URL: "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81"
         run: |
-          RESULTS_JSON="cypress/reports/mochawesome.json"
-          if [ ! -f "$RESULTS_JSON" ]; then
-            echo "No existe $RESULTS_JSON"; exit 1
-          fi
+          set -euo pipefail
 
+          RESULTS_JSON="cypress/reports/mochawesome.json"
+          RESULTS_HTML="cypress/reports/mochawesome.html"
+
+          # 1) Validaciones de existencia
+          if [ ! -f "$RESULTS_JSON" ]; then echo "No existe $RESULTS_JSON"; exit 1; fi
+          if [ ! -f "$RESULTS_HTML" ]; then echo "No existe $RESULTS_HTML"; exit 1; fi
+
+          # 2) Métricas
           PASSED=$(jq '.stats.passes // 0' "$RESULTS_JSON")
           FAILED=$(jq '.stats.failures // 0' "$RESULTS_JSON")
           DURATION=$(jq '.stats.duration // 0' "$RESULTS_JSON")
 
           echo "Resumen → passed=$PASSED failed=$FAILED durationMs=$DURATION"
+          echo "POST → $WEBHOOK_URL"
 
-          curl -sS -f -X POST "https://francoosunaafip.app.n8n.cloud/webhook/7851647c-e729-498e-a11a-190e03f20d81" \
-            -H "Content-Type: application/json" \
-            -d "{\"passed\":$PASSED,\"failed\":$FAILED,\"durationMs\":$DURATION}"
+          # 3) Envío multipart con logging de código HTTP y cuerpo
+          HTTP_CODE=$(curl -sS -X POST "$WEBHOOK_URL" \
+            -H "Expect:" \
+            -F "passed=$PASSED" \
+            -F "failed=$FAILED" \
+            -F "durationMs=$DURATION" \
+            -F "report=@${RESULTS_HTML};type=text/html" \
+            -F "reportJson=@${RESULTS_JSON};type=application/json" \
+            -w "%{http_code}" -o /tmp/n8n_resp.txt) || true
 
-      - name: Upload mochawesome artifact (opcional)
+          echo "HTTP_CODE=$HTTP_CODE"
+          echo "Respuesta n8n:"
+          cat /tmp/n8n_resp.txt || true
+          echo
+
+          # 4) Si no es 2xx, caemos a plan B (solo JSON application/json)
+          if [ "${HTTP_CODE:0:1}" != "2" ]; then
+            echo "⚠️ Multipart falló (HTTP $HTTP_CODE). Probamos envío JSON simple…"
+            curl -sS -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{\"passed\":$PASSED,\"failed\":$FAILED,\"durationMs\":$DURATION}" \
+              -w "\nHTTP_CODE=%{http_code}\n" -o /tmp/n8n_resp_b.txt || true
+            cat /tmp/n8n_resp_b.txt || true
+            echo
+            # no hagas 'exit 1' aquí si querés permitir éxito con el plan B
+          fi
+
+      - name: Upload artifacts (opcional)
         uses: actions/upload-artifact@v4
         with:
           name: mochawesome-report
